@@ -4,7 +4,7 @@
 
 A hypervisor application built on the [ArceOS](https://github.com/arceos-org/arceos) unikernel framework, with all dependencies sourced from [crates.io](https://crates.io). It runs a **guest monolithic OS kernel** inside a virtual machine, featuring user-space process support (task management, syscall handling, preemptive scheduling).
 
-This crate is derived from the [h_4_0](https://github.com/arceos-org/arceos/tree/main/tour/h_4_0) tutorial crate in the ArceOS ecosystem. The guest monolithic kernel is implemented in the [m_1_1](https://github.com/arceos-org/arceos/tree/main/tour/m_1_1) style, and extended to support three processor architectures.
+This crate is derived from the ArceOS hypervisor tutorial in the [ArceOS](https://github.com/arceos-org/arceos) ecosystem. The guest monolithic kernel is implemented in the ArceOS monolithic kernel style, and extended to support three processor architectures.
 
 ## What It Does
 
@@ -200,7 +200,7 @@ arceos-guestmonolithickernel/
 ├── .cargo/
 │   └── config.toml              # cargo xtask alias & AX_CONFIG_PATH
 ├── payload/
-│   └── gkernel/                 # Guest monolithic kernel (m_1_1 style)
+│   └── gkernel/                 # Guest monolithic kernel
 │       ├── .cargo/
 │       │   └── config.toml      # Guest build configuration
 │       ├── configs/
@@ -250,7 +250,7 @@ The `xtask` build tool automatically performs the following steps:
 6. Builds the hypervisor kernel (`--features axstd`)
 7. Launches QEMU with VirtIO block device and pflash attached
 
-### Control Flow (h_4_0 Style)
+### Control Flow
 
 ```
 Hypervisor                              Guest Monolithic Kernel (gkernel)
@@ -299,10 +299,10 @@ Hypervisor                              Guest Monolithic Kernel (gkernel)
 
 | Crate | Role | Description |
 |---|---|---|
-| **arceos-guestmonolithickernel** (this crate) | Hypervisor + Guest monolithic kernel | Runs guest with user-space process support (h_4_0 + m_1_1 style) |
-| [arceos-guestvdev](https://crates.io/crates/arceos-guestvdev) | Hypervisor + Guest | Virtual device passthrough (h_3_0 style) |
-| [arceos-guestaspace](https://crates.io/crates/arceos-guestaspace) | Hypervisor + Guest | Nested page fault handling (h_2_0 style) |
-| [arceos-guestmode](https://crates.io/crates/arceos-guestmode) | Hypervisor + Guest | Minimal guest mode switching (h_1_0 style) |
+| **arceos-guestmonolithickernel** (this crate) | Hypervisor + Guest monolithic kernel | Runs guest with user-space process support |
+| [arceos-guestvdev](https://crates.io/crates/arceos-guestvdev) | Hypervisor + Guest | Virtual device passthrough |
+| [arceos-guestaspace](https://crates.io/crates/arceos-guestaspace) | Hypervisor + Guest | Nested page fault handling |
+| [arceos-guestmode](https://crates.io/crates/arceos-guestmode) | Hypervisor + Guest | Minimal guest mode switching |
 
 ## Key Dependencies
 
