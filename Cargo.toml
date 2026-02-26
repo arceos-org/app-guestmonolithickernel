@@ -32,7 +32,6 @@ hypervisor = [
     "dep:axmm", "dep:axhal", "dep:axsync", "dep:axtask", "dep:axlog",
     "dep:axerrno", "dep:memory_addr",
     "dep:memoffset",
-    "axstd/multitask", "axstd/sched-cfs", "axstd/fs", "axstd/net"
 ]
 xtask = ["dep:clap", "dep:fatfs"]
 
@@ -48,16 +47,14 @@ required-features = ["guest-kernel"]
 
 [dependencies]
 # ─── ArceOS crates (common, all architectures) ───
-axstd = { version = "0.2.2-preview.1", features = ["defplat", "alloc", "paging", "multitask", "sched-cfs", "fs-fat"], optional = true }
+axstd = { version = "0.2.2-preview.1", features = ["defplat", "alloc", "paging", "multitask", "sched-cfs"], optional = true }
 axfeat = { version = "0.2.2-preview.1", features = ["fs", "fs-fat"], optional = true }
 axfs = { version = "0.2.2-preview.1", features = ["fat"], optional = true }
 axio = { version = "0.3.0-pre.1", optional = true }
 axmm = { version = "0.2.2-preview.1", features = ["copy"], optional = true }
 axhal = { version = "0.2.2-preview.3", features = ["uspace"], optional = true }
-axnet = { version = "0.2.2-preview.1", optional = true }
 axsync = { version = "0.2.2-preview.1", optional = true }
 axtask = { version = "0.2.2-preview.3", optional = true }
-axdriver = { version = "0.2.2-preview.2", optional = true }
 axlog = { version = "0.2.2-preview.1", optional = true }
 axerrno = { version = "0.1", optional = true }
 memory_addr = { version = "0.4", optional = true }
