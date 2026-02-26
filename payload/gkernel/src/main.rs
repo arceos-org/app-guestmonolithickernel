@@ -37,11 +37,12 @@ extern crate alloc;
 #[cfg(all(feature = "axstd", not(target_arch = "x86_64")))]
 mod monolithic_kernel {
     use alloc::sync::Arc;
-    use axhal::mem::{PAGE_SIZE_4K, VirtAddr, va, phys_to_virt};
-    use axhal::paging::{MappingFlags, PageSize};
-    use axhal::uspace::{UserContext, ReturnReason};
+    use std::os::arceos::modules::axhal::mem::{PAGE_SIZE_4K, VirtAddr, va, phys_to_virt};
+    use std::os::arceos::modules::axhal::paging::{MappingFlags, PageSize};
+    use std::os::arceos::modules::axhal::uspace::{UserContext, ReturnReason};
     use axmm::AddrSpace;
     use axmm::backend::{Backend, SharedPages};
+    use std::os::arceos::modules::axtask;
 
     const USER_STACK_SIZE: usize = 0x10000;   // 64 KB
     const KERNEL_STACK_SIZE: usize = 0x40000; // 256 KB
@@ -90,6 +91,10 @@ mod monolithic_kernel {
             .expect("failed to map app code");
 
         // Write embedded user app binary into the mapped page.
+        // We need to temporarily map the page to kernel space or use phys_to_virt if we can find the physical address.
+        // axmm::AddrSpace::map maps to the user space. The backend holds the physical memory.
+        
+        // Query the page table to get the physical address we just mapped.
         let (paddr, _, _) = uspace
             .page_table()
             .query(start)
@@ -140,6 +145,7 @@ mod monolithic_kernel {
         uspace
             .copy_mappings_from(&*axmm::kernel_aspace().lock())
             .expect("failed to copy kernel mappings");
+
 
         // Load user app binary into address space.
         load_user_app(&mut uspace);
@@ -246,4 +252,16 @@ fn main() {
             options(noreturn, nomem, nostack),
         );
     }
+}
+
+#[cfg(not(feature = "axstd"))]
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    loop {}
+}
+
+#[cfg(not(feature = "axstd"))]
+#[unsafe(no_mangle)]
+extern "C" fn _start() -> ! {
+    loop {}
 }
