@@ -36,12 +36,10 @@ extern crate alloc;
 // Uses axhal::uspace for real user context entry/exit.
 #[cfg(all(feature = "axstd", not(target_arch = "x86_64")))]
 mod monolithic_kernel {
-    use alloc::sync::Arc;
-    use std::os::arceos::modules::axhal::mem::{PAGE_SIZE_4K, VirtAddr, va, phys_to_virt};
-    use std::os::arceos::modules::axhal::paging::{MappingFlags, PageSize};
+    use std::os::arceos::modules::axhal::mem::{PAGE_SIZE_4K, VirtAddr, va};
+    use std::os::arceos::modules::axhal::paging::MappingFlags;
     use std::os::arceos::modules::axhal::uspace::{UserContext, ReturnReason};
     use axmm::AddrSpace;
-    use axmm::backend::{Backend, SharedPages};
     use std::os::arceos::modules::axtask;
 
     const USER_STACK_SIZE: usize = 0x10000;   // 64 KB
@@ -84,31 +82,19 @@ mod monolithic_kernel {
         let flags = MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE | MappingFlags::USER;
 
         // Allocate one 4K page for the app code.
-        let pages = SharedPages::new(PAGE_SIZE_4K, PageSize::Size4K)
-            .expect("failed to alloc pages for app code");
-        let backend = Backend::new_shared(start, Arc::new(pages));
-        uspace.map(start, PAGE_SIZE_4K, flags, false, backend)
+        uspace.map_alloc(start, PAGE_SIZE_4K, flags, true)
             .expect("failed to map app code");
 
         // Write embedded user app binary into the mapped page.
-        // We need to temporarily map the page to kernel space or use phys_to_virt if we can find the physical address.
-        // axmm::AddrSpace::map maps to the user space. The backend holds the physical memory.
-        
-        // Query the page table to get the physical address we just mapped.
+        uspace.write(start, USER_APP)
+            .expect("failed to write app code");
+
         let (paddr, _, _) = uspace
             .page_table()
             .query(start)
             .unwrap_or_else(|_| panic!("Mapping failed for segment: {:#x}", APP_ENTRY));
 
         println!("paddr: {:#x}", paddr);
-
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                USER_APP.as_ptr(),
-                phys_to_virt(paddr).as_mut_ptr(),
-                USER_APP.len(),
-            );
-        }
     }
 
     // ── Init user stack ──
@@ -123,11 +109,7 @@ mod monolithic_kernel {
             ustack_vaddr, ustack_top
         );
 
-        // Allocate pages for the user stack.
-        let pages = SharedPages::new(USER_STACK_SIZE, PageSize::Size4K)
-            .expect("failed to alloc pages for user stack");
-        let backend = Backend::new_shared(ustack_vaddr, Arc::new(pages));
-        uspace.map(ustack_vaddr, USER_STACK_SIZE, flags, false, backend)
+        uspace.map_alloc(ustack_vaddr, USER_STACK_SIZE, flags, true)
             .expect("failed to map user stack");
 
         ustack_top
@@ -136,12 +118,13 @@ mod monolithic_kernel {
     // ── Main entry point ──
 
     pub fn run() {
-        // Create a new user address space.
-        let mut uspace = AddrSpace::new_empty(va!(USER_ASPACE_BASE), USER_ASPACE_SIZE)
+        // Create a new user address space (copies kernel mappings for non-aarch64).
+        let mut uspace = axmm::new_user_aspace(va!(USER_ASPACE_BASE), USER_ASPACE_SIZE)
             .expect("failed to create user address space");
 
-        // Copy kernel mappings into the user page table so that
-        // kernel code/data is accessible when handling syscalls.
+        // For aarch64, kernel mappings are not copied by new_user_aspace (uses TTBR0/TTBR1),
+        // so copy them explicitly here.
+        #[cfg(target_arch = "aarch64")]
         uspace
             .copy_mappings_from(&*axmm::kernel_aspace().lock())
             .expect("failed to copy kernel mappings");
