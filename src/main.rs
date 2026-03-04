@@ -23,7 +23,10 @@
 
 #![cfg_attr(feature = "axstd", no_std)]
 #![cfg_attr(feature = "axstd", no_main)]
-#![cfg_attr(all(feature = "axstd", target_arch = "riscv64"), feature(riscv_ext_intrinsics))]
+#![cfg_attr(
+    all(feature = "axstd", target_arch = "riscv64"),
+    feature(riscv_ext_intrinsics)
+)]
 
 #[cfg(feature = "axstd")]
 extern crate axstd as std;
@@ -42,13 +45,13 @@ extern crate axio;
 
 // ────────────────── RISC-V 64 specific modules ──────────────────
 #[cfg(all(feature = "axstd", target_arch = "riscv64"))]
-mod vcpu;
+mod csrs;
 #[cfg(all(feature = "axstd", target_arch = "riscv64"))]
 mod regs;
 #[cfg(all(feature = "axstd", target_arch = "riscv64"))]
-mod csrs;
-#[cfg(all(feature = "axstd", target_arch = "riscv64"))]
 mod sbi;
+#[cfg(all(feature = "axstd", target_arch = "riscv64"))]
+mod vcpu;
 
 // ────────────────── AArch64 specific modules ──────────────────
 // NOTE: The current AArch64 approach uses a bootloader-style handoff
@@ -85,7 +88,11 @@ const VM_ENTRY: usize = 0x20_0000;
 
 #[cfg(all(
     feature = "axstd",
-    not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64"))
+    not(any(
+        target_arch = "riscv64",
+        target_arch = "aarch64",
+        target_arch = "x86_64"
+    ))
 ))]
 const VM_ENTRY: usize = 0x8020_0000;
 
@@ -127,17 +134,18 @@ fn main() {
 #[cfg(all(feature = "axstd", target_arch = "riscv64"))]
 fn riscv64_main() {
     use alloc::sync::Arc;
-    use vcpu::VmCpuRegisters;
-    use riscv::register::scause;
+    use axhal::mem::PhysAddr;
+    use axhal::paging::MappingFlags;
+    use axstd::fs::File;
+    use axstd::io::Read;
     use csrs::defs::hstatus;
     use csrs::traps;
+    use csrs::{CSR, RiscvCsrTrait};
+    use memory_addr::{PAGE_SIZE_4K, VirtAddr, va};
+    use riscv::register::scause;
     use tock_registers::LocalRegisterCopy;
-    use csrs::{RiscvCsrTrait, CSR};
     use vcpu::_run_guest;
-    use axhal::mem::PhysAddr;
-    use axhal::paging::{MappingFlags, PageSize};
-    use axmm::backend::{Backend, SharedPages};
-    use memory_addr::{va, PAGE_SIZE_4K};
+    use vcpu::VmCpuRegisters;
 
     ax_println!("Starting virtualization...");
 
@@ -180,12 +188,12 @@ fn riscv64_main() {
     }
 
     // ════════════════════════════════════════════════════
-    //  Step 1: Create guest address space (h_4_0: AddrSpace::new_empty)
+    //  Step 1: Create guest address space (h_4_0: new_user_aspace)
     // ════════════════════════════════════════════════════
-    let mut uspace = axmm::AddrSpace::new_empty(va!(0x0), 0x7fff_ffff_f000).unwrap();
+    let mut uspace = axmm::new_user_aspace(va!(0x0), 0x7fff_ffff_f000).unwrap();
 
-    let flags = MappingFlags::READ | MappingFlags::WRITE
-        | MappingFlags::EXECUTE | MappingFlags::USER;
+    let flags =
+        MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE | MappingFlags::USER;
 
     // ════════════════════════════════════════════════════
     //  Step 2: Pre-allocate guest physical RAM
@@ -196,19 +204,13 @@ fn riscv64_main() {
     const PHY_MEM_START: usize = 0x8000_0000;
     const PHY_MEM_SIZE: usize = 0x100_0000; // 16 MB
 
-    ax_println!("Pre-allocating {} MB guest RAM at {:#x}...", PHY_MEM_SIZE / (1024 * 1024), PHY_MEM_START);
-    let pages = Arc::new(
-        SharedPages::new(PHY_MEM_SIZE, PageSize::Size4K)
-            .expect("alloc guest RAM pages"),
+    ax_println!(
+        "Pre-allocating {} MB guest RAM at {:#x}...",
+        PHY_MEM_SIZE / (1024 * 1024),
+        PHY_MEM_START
     );
     uspace
-        .map(
-            PHY_MEM_START.into(),
-            PHY_MEM_SIZE,
-            flags,
-            true,
-            Backend::new_shared(PHY_MEM_START.into(), pages),
-        )
+        .map_alloc(VirtAddr::from(PHY_MEM_START), PHY_MEM_SIZE, flags, true)
         .expect("map guest RAM");
 
     // ════════════════════════════════════════════════════
@@ -221,13 +223,12 @@ fn riscv64_main() {
         let fname = "/sbin/gkernel";
         ax_println!("VM created success, loading images...");
         ax_println!("app: {}", fname);
-        let ctx = axfs::ROOT_FS_CONTEXT.get().expect("Root FS not initialized");
-        let file = axfs::File::open(ctx, fname).expect("Cannot open guest image");
+        let mut file = File::open(fname).expect("Cannot open guest image");
         let mut offset = 0usize;
         let mut total_bytes = 0usize;
         loop {
             let mut buf = [0u8; 4096];
-            let n = axio::Read::read(&mut &file, &mut buf).expect("read");
+            let n = file.read(&mut buf).expect("read");
             if n == 0 {
                 break;
             }
@@ -315,9 +316,8 @@ fn riscv64_main() {
                 // ── Legacy SBI PutChar (fast path: write directly to UART) ──
                 if a7 == 1 {
                     let ch = ctx.guest_regs.gprs.a_regs()[0] as u8;
-                    let uart_va = axhal::mem::phys_to_virt(
-                        PhysAddr::from(0x1000_0000usize),
-                    ).as_usize();
+                    let uart_va =
+                        axhal::mem::phys_to_virt(PhysAddr::from(0x1000_0000usize)).as_usize();
                     unsafe {
                         core::ptr::write_volatile(uart_va as *mut u8, ch);
                     }
@@ -439,7 +439,7 @@ fn riscv64_main() {
     }
 
     fn prepare_guest_context(ctx: &mut VmCpuRegisters) {
-        use csrs::{RiscvCsrTrait, CSR};
+        use csrs::{CSR, RiscvCsrTrait};
         let hstatus_val: usize;
         unsafe {
             core::arch::asm!("csrr {}, hstatus", out(reg) hstatus_val);
@@ -494,12 +494,12 @@ core::arch::global_asm!(
     ".global _aarch64_guest_trampoline",
     "_aarch64_guest_trampoline:",
     // x0 = guest entry physical address
-    "mov x2, x0",                   // Save guest entry PA in x2
+    "mov x2, x0", // Save guest entry PA in x2
     // Disable MMU, D-cache, I-cache in SCTLR_EL1
     "mrs x1, sctlr_el1",
-    "bic x1, x1, #(1 << 0)",        // M = 0: disable MMU
-    "bic x1, x1, #(1 << 2)",        // C = 0: disable D-cache
-    "bic x1, x1, #(1 << 12)",       // I = 0: disable I-cache
+    "bic x1, x1, #(1 << 0)",  // M = 0: disable MMU
+    "bic x1, x1, #(1 << 2)",  // C = 0: disable D-cache
+    "bic x1, x1, #(1 << 12)", // I = 0: disable I-cache
     "msr sctlr_el1, x1",
     "isb",
     // Invalidate TLB
@@ -520,9 +520,11 @@ core::arch::global_asm!(
 
 #[cfg(all(feature = "axstd", target_arch = "aarch64"))]
 fn aarch64_main() {
-    use axhal::mem::{phys_to_virt, virt_to_phys, PhysAddr};
+    use axhal::mem::{PhysAddr, phys_to_virt, virt_to_phys};
     use axhal::paging::MappingFlags;
-    use memory_addr::{va, PAGE_SIZE_4K};
+    use axstd::fs::File;
+    use axstd::io::Read;
+    use memory_addr::{PAGE_SIZE_4K, va};
 
     ax_println!("Starting virtualization (bootloader mode)...");
 
@@ -535,30 +537,29 @@ fn aarch64_main() {
     ax_println!("VM created success, loading images...");
     ax_println!("app: {}", fname);
 
-    let ctx = axfs::ROOT_FS_CONTEXT.get().expect("Root FS not initialized");
-    let file = axfs::File::open(ctx, fname).expect("Cannot open guest image");
+    let mut file = File::open(fname).expect("Cannot open guest image");
     let mut total_bytes = 0usize;
     loop {
         let mut buf = [0u8; 4096];
-        let n = axio::Read::read(&mut &file, &mut buf).expect("read");
+        let n = file.read(&mut buf).expect("read");
         if n == 0 {
             break;
         }
         // Write directly to guest physical memory via hypervisor's linear mapping
         let dst_va = phys_to_virt(PhysAddr::from(GUEST_KERNEL_PADDR + total_bytes)).as_usize();
         unsafe {
-            core::ptr::copy_nonoverlapping(
-                buf.as_ptr(),
-                dst_va as *mut u8,
-                n,
-            );
+            core::ptr::copy_nonoverlapping(buf.as_ptr(), dst_va as *mut u8, n);
         }
         total_bytes += n;
         if n < 4096 {
             break;
         }
     }
-    ax_println!("Loaded {} bytes to PA {:#x}", total_bytes, GUEST_KERNEL_PADDR);
+    ax_println!(
+        "Loaded {} bytes to PA {:#x}",
+        total_bytes,
+        GUEST_KERNEL_PADDR
+    );
 
     // ── 2. Clean D-cache for guest binary ──
     // Ensures data is written to main memory before MMU & caches are disabled.
@@ -584,7 +585,9 @@ fn aarch64_main() {
     let trampoline_page_pa = trampoline_pa & !0xFFF;
     ax_println!(
         "Trampoline at VA {:#x} -> PA {:#x} (page {:#x})",
-        trampoline_va, trampoline_pa, trampoline_page_pa
+        trampoline_va,
+        trampoline_pa,
+        trampoline_page_pa
     );
 
     // ── 4. Create identity mapping for trampoline page in TTBR0 ──
@@ -594,13 +597,15 @@ fn aarch64_main() {
     // flag would set PXN (Privileged eXecute Never), blocking EL1 execution.
     let flags = MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE;
 
-    let mut identity = axmm::AddrSpace::new_empty(va!(0x0), 0x4800_0000).unwrap();
-    identity.map_linear(
-        trampoline_page_pa.into(),
-        PhysAddr::from(trampoline_page_pa),
-        PAGE_SIZE_4K,
-        flags,
-    ).expect("identity-map trampoline page");
+    let mut identity = axmm::new_user_aspace(va!(0x0), 0x4800_0000).unwrap();
+    identity
+        .map_linear(
+            trampoline_page_pa.into(),
+            PhysAddr::from(trampoline_page_pa),
+            PAGE_SIZE_4K,
+            flags,
+        )
+        .expect("identity-map trampoline page");
 
     // ── 5. Switch TTBR0 to identity page table ──
     let pt_root = identity.page_table_root();
@@ -668,14 +673,14 @@ fn aarch64_main() {
 #[cfg(all(feature = "axstd", target_arch = "x86_64"))]
 fn x86_64_main() {
     use alloc::boxed::Box;
-    use alloc::sync::Arc;
-    use x86_64_svm::vmcb::*;
-    use x86_64_svm::svm::*;
+    use axhal::mem::{PhysAddr, phys_to_virt};
+    use axhal::paging::MappingFlags;
+    use axstd::fs::File;
+    use axstd::io::Read;
     use memory_addr::va;
-    use axhal::mem::{phys_to_virt, PhysAddr};
-    use axhal::paging::{MappingFlags, PageSize};
-    use axmm::backend::{Backend, SharedPages};
-    use memory_addr::PAGE_SIZE_4K;
+    use memory_addr::{PAGE_SIZE_4K, VirtAddr};
+    use x86_64_svm::svm::*;
+    use x86_64_svm::vmcb::*;
 
     ax_println!("Starting virtualization...");
 
@@ -723,25 +728,19 @@ fn x86_64_main() {
     let msrpm_pa = virt_to_phys_ptr(&msrpm.0[0]);
 
     // ── 5. Create NPT and pre-allocate guest RAM ──
-    let mut npt = axmm::AddrSpace::new_empty(va!(0x0), 0x1_0000_0000).unwrap();
+    let mut npt = axmm::new_user_aspace(va!(0x0), 0x1_0000_0000).unwrap();
 
-    let flags = MappingFlags::READ | MappingFlags::WRITE
-        | MappingFlags::EXECUTE | MappingFlags::USER;
+    let flags =
+        MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE | MappingFlags::USER;
 
     // Pre-allocate 32MB of guest RAM (matching guest config phys-memory-size)
     const GUEST_RAM_SIZE: usize = 0x200_0000; // 32MB
-    ax_println!("Pre-allocating {} MB guest RAM at GPA 0x0...", GUEST_RAM_SIZE / (1024 * 1024));
-    let ram_pages = Arc::new(
-        SharedPages::new(GUEST_RAM_SIZE, PageSize::Size4K)
-            .expect("alloc guest RAM"),
+    ax_println!(
+        "Pre-allocating {} MB guest RAM at GPA 0x0...",
+        GUEST_RAM_SIZE / (1024 * 1024)
     );
-    npt.map(
-        0x0usize.into(),
-        GUEST_RAM_SIZE,
-        flags,
-        true,
-        Backend::new_shared(0x0usize.into(), ram_pages),
-    ).expect("map guest RAM");
+    npt.map_alloc(VirtAddr::from(0x0usize), GUEST_RAM_SIZE, flags, true)
+        .expect("map guest RAM");
 
     // Map APIC MMIO (GPA 0xFEE00000 → HPA 0xFEE00000, identity)
     // Required for the guest to program the APIC timer for preemptive scheduling.
@@ -751,7 +750,8 @@ fn x86_64_main() {
         PhysAddr::from(0xFEE0_0000usize),
         PAGE_SIZE_4K,
         flags,
-    ).expect("map APIC");
+    )
+    .expect("map APIC");
 
     // Map IOAPIC MMIO (GPA 0xFEC00000 → HPA 0xFEC00000, identity)
     ax_println!("Mapping IOAPIC at GPA 0xFEC00000 (identity)...");
@@ -760,7 +760,8 @@ fn x86_64_main() {
         PhysAddr::from(0xFEC0_0000usize),
         PAGE_SIZE_4K,
         flags,
-    ).expect("map IOAPIC");
+    )
+    .expect("map IOAPIC");
 
     // ── 6. Write initial GDT into guest memory (GPA 0x5000) ──
     // This matches the format in ArceOS multiboot.S:
@@ -783,13 +784,12 @@ fn x86_64_main() {
         let fname = "/sbin/gkernel";
         ax_println!("VM created success, loading images...");
         ax_println!("app: {}", fname);
-        let ctx = axfs::ROOT_FS_CONTEXT.get().expect("Root FS not initialized");
-        let file = axfs::File::open(ctx, fname).expect("Cannot open guest image");
+        let mut file = File::open(fname).expect("Cannot open guest image");
         let mut offset = 0usize;
         let mut total_bytes = 0usize;
         loop {
             let mut buf = [0u8; 4096];
-            let n = axio::Read::read(&mut &file, &mut buf).expect("read");
+            let n = file.read(&mut buf).expect("read");
             if n == 0 {
                 break;
             }
@@ -910,9 +910,14 @@ fn x86_64_main() {
         mmap_entry[4..12].copy_from_slice(&0u64.to_le_bytes()); // base_addr = 0
         mmap_entry[12..20].copy_from_slice(&(GUEST_RAM_SIZE as u64).to_le_bytes()); // length = 32MB
         mmap_entry[20..24].copy_from_slice(&1u32.to_le_bytes()); // type = Available
-        npt.write(MMAP_ADDR.into(), &mmap_entry).expect("write mmap entry");
+        npt.write(MMAP_ADDR.into(), &mmap_entry)
+            .expect("write mmap entry");
 
-        ax_println!("MBI at GPA {:#x}, mmap at GPA {:#x} (32MB available)", MBI_ADDR, MMAP_ADDR);
+        ax_println!(
+            "MBI at GPA {:#x}, mmap at GPA {:#x} (32MB available)",
+            MBI_ADDR,
+            MMAP_ADDR
+        );
     }
 
     // ── 9. Create guest GPR save area ──
@@ -936,7 +941,9 @@ fn x86_64_main() {
             core::ptr::write_volatile((apic_va + 0x0B0) as *mut u32, 0);
         }
         // Briefly enable interrupts to clear any pending timer interrupt
-        unsafe { core::arch::asm!("sti; nop; nop; nop; cli"); }
+        unsafe {
+            core::arch::asm!("sti; nop; nop; nop; cli");
+        }
         ax_println!("Host APIC timer masked");
     }
 
@@ -980,17 +987,7 @@ fn x86_64_main() {
                 // we pre-mapped them above. Any other NPF is handled by
                 // allocating zeroed pages — this allows PCI probing to
                 // read all-zeros (no devices), preventing VirtIO conflicts.
-                let pages = Arc::new(
-                    SharedPages::new(PAGE_SIZE_4K, PageSize::Size4K)
-                        .expect("alloc page for NPF"),
-                );
-                let _ = npt.map(
-                    page_addr.into(),
-                    PAGE_SIZE_4K,
-                    flags,
-                    true,
-                    Backend::new_shared(page_addr.into(), pages),
-                );
+                let _ = npt.map_alloc(VirtAddr::from(page_addr), PAGE_SIZE_4K, flags, true);
             }
             VMEXIT_MSR => {
                 // MSR intercept — we only intercept EFER writes.
@@ -1038,11 +1035,7 @@ fn x86_64_main() {
     ax_println!("Hypervisor ok!");
     // Write 0x2000 to ACPI shutdown port (QEMU-specific)
     unsafe {
-        core::arch::asm!(
-            "mov dx, 0x604",
-            "mov ax, 0x2000",
-            "out dx, ax",
-        );
+        core::arch::asm!("mov dx, 0x604", "mov ax, 0x2000", "out dx, ax",);
     }
     panic!("Hypervisor ok!");
 
