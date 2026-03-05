@@ -237,9 +237,6 @@ fn riscv64_main() {
                 .write((VM_ENTRY + offset).into(), &buf[..n])
                 .expect("write guest image");
             offset += n;
-            if n < 4096 {
-                break;
-            }
         }
         ax_println!("Loaded {} bytes from {}", total_bytes, fname);
     }
@@ -551,9 +548,6 @@ fn aarch64_main() {
             core::ptr::copy_nonoverlapping(buf.as_ptr(), dst_va as *mut u8, n);
         }
         total_bytes += n;
-        if n < 4096 {
-            break;
-        }
     }
     ax_println!(
         "Loaded {} bytes to PA {:#x}",
@@ -797,9 +791,6 @@ fn x86_64_main() {
             npt.write((VM_ENTRY + offset).into(), &buf[..n])
                 .expect("write guest binary");
             offset += n;
-            if n < 4096 {
-                break;
-            }
         }
         ax_println!("Loaded {} bytes from {}", total_bytes, fname);
     }

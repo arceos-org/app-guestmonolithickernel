@@ -28,6 +28,9 @@ enum Cmd {
         /// Target architecture: riscv64, aarch64, x86_64
         #[arg(long, default_value = "riscv64")]
         arch: String,
+        /// QEMU timeout in seconds (0 means no timeout)
+        #[arg(long, default_value_t = 10)]
+        timeout: u64,
     },
 }
 
@@ -46,7 +49,7 @@ fn arch_info(arch: &str) -> ArchInfo {
             platform: "riscv64-qemu-virt",
             objcopy_arch: "riscv64",
         },
-        "aarch64" => ArchInfo {
+        "aarch64" | "arch64" => ArchInfo {
             target: "aarch64-unknown-none-softfloat",
             platform: "aarch64-qemu-virt",
             objcopy_arch: "aarch64",
@@ -59,11 +62,18 @@ fn arch_info(arch: &str) -> ArchInfo {
         _ => {
             eprintln!(
                 "Error: unsupported architecture '{}'. \
-                 Supported: riscv64, aarch64, x86_64",
+                 Supported: riscv64, aarch64 (or arch64), x86_64",
                 arch
             );
             process::exit(1);
         }
+    }
+}
+
+fn normalize_arch(arch: &str) -> &str {
+    match arch {
+        "arch64" => "aarch64",
+        _ => arch,
     }
 }
 
@@ -332,7 +342,14 @@ fn do_objcopy(elf: &Path, bin: &Path, objcopy_arch: &str) {
 }
 
 /// Run QEMU with VirtIO block device and optional pflash.
-fn do_run_qemu(arch: &str, elf: &Path, bin: &Path, disk: &Path, pflash: Option<&Path>) {
+fn do_run_qemu(
+    arch: &str,
+    elf: &Path,
+    bin: &Path,
+    disk: &Path,
+    pflash: Option<&Path>,
+    timeout_secs: u64,
+) {
     let mem = "128M";
     let smp = "1";
     let qemu = format!("qemu-system-{arch}");
@@ -407,11 +424,21 @@ fn do_run_qemu(arch: &str, elf: &Path, bin: &Path, disk: &Path, pflash: Option<&
 
     println!("Running: {} {}", qemu, args.join(" "));
 
-    let timeout_secs = 20u64;
     let mut child = Command::new(&qemu).args(&args).spawn().unwrap_or_else(|e| {
         eprintln!("Error: failed to run {}: {}", qemu, e);
         process::exit(1);
     });
+
+    if timeout_secs == 0 {
+        let status = child.wait().unwrap_or_else(|e| {
+            eprintln!("Error: failed to wait for QEMU: {}", e);
+            process::exit(1);
+        });
+        if !status.success() {
+            process::exit(status.code().unwrap_or(1));
+        }
+        return;
+    }
 
     // Poll child every 200ms until it exits or timeout is reached.
     let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
@@ -449,6 +476,7 @@ fn main() {
 
     match cli.command {
         Cmd::Build { ref arch } => {
+            let arch = normalize_arch(arch);
             let info = arch_info(arch);
             install_config(&root, arch);
             install_payload_config(&root, arch);
@@ -456,7 +484,8 @@ fn main() {
             do_build(&root, &info);
             println!("Build complete for {arch} ({})", info.target);
         }
-        Cmd::Run { ref arch } => {
+        Cmd::Run { ref arch, timeout } => {
+            let arch = normalize_arch(arch);
             let info = arch_info(arch);
             install_config(&root, arch);
 
@@ -490,7 +519,7 @@ fn main() {
             }
 
             // 5. Run QEMU
-            do_run_qemu(arch, &elf, &bin, &disk, pflash.as_deref());
+            do_run_qemu(arch, &elf, &bin, &disk, pflash.as_deref(), timeout);
         }
     }
 }

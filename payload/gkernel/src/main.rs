@@ -80,7 +80,7 @@ mod monolithic_kernel {
 
         // Allocate one 4K page for the app code using map_alloc
         uspace
-            .map_alloc(start, PAGE_SIZE_4K, flags, false)
+            .map_alloc(start, PAGE_SIZE_4K, flags, true)
             .expect("failed to map app code");
 
         // Write embedded user app binary into the mapped page using AddrSpace::write
@@ -105,7 +105,7 @@ mod monolithic_kernel {
 
         // Allocate pages for the user stack using map_alloc.
         uspace
-            .map_alloc(ustack_vaddr, USER_STACK_SIZE, flags, false)
+            .map_alloc(ustack_vaddr, USER_STACK_SIZE, flags, true)
             .expect("failed to map user stack");
 
         ustack_top
@@ -208,6 +208,13 @@ fn main() {
     monolithic_kernel::run();
 
     // On AArch64 (bootloader mode), the guest has direct hardware access.
+    // Keep final status messages consistent with other architectures.
+    #[cfg(target_arch = "aarch64")]
+    {
+        println!("Shutdown vm normally!");
+        println!("Hypervisor ok!");
+    }
+
     // Explicitly call PSCI SYSTEM_OFF to cleanly shut down QEMU.
     #[cfg(target_arch = "aarch64")]
     unsafe {
